@@ -616,8 +616,15 @@ class ProverManager {
         stopped = true;
         for (int i = 0; i < provers.size(); i++)
             provers[i].first->stop();
-        std::lock_guard<std::mutex> lk(proof_mutex);
-        proof_cv.notify_all();
+        {
+            std::lock_guard<std::mutex> lk(proof_mutex);
+            proof_cv.notify_all();
+        }
+        {
+            std::lock_guard<std::mutex> lk(new_event_mutex);
+            new_event = true;
+            new_event_cv.notify_all();
+        }
     }
 
     Proof Prove(uint64_t iteration) {
@@ -828,7 +835,7 @@ class ProverManager {
                     active_provers++;
             }
 
-            while (true) {
+            while (!stopped) {
                 // Find the best pending/paused segment and remember where it is.
                 Segment best;
                 int index;
