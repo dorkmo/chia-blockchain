@@ -210,7 +210,7 @@ void test() {
     ProverManager pm(D, &weso, segments, 2); 
     pm.start();
     for (int i = 0; i <= 10; i++) {
-        std::thread t(CreateAndWriteProofNew, std::ref(pm), (1 << 21) * i + (1 << 16) - 1);
+        std::thread t(CreateAndWriteProofNew, std::ref(pm), (1 << 21) * i + (1 << 16) - i % 2);
         t.detach();
     }
     /*std::this_thread::sleep_for (std::chrono::seconds(1800));

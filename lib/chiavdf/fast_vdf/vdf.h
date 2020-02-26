@@ -783,7 +783,7 @@ class ProverManager {
         {
             std::unique_lock<std::mutex> lk(proof_mutex);
             proof_cv.wait(lk, [this, iteration] {
-                if ((max_proving_iteration + (1 << 16)) >= iteration) 
+                if ((max_proving_iteration + (1 << 16)) > iteration) 
                     return true;
                 return stopped;
             });
@@ -801,47 +801,50 @@ class ProverManager {
             pending_iters.erase(iteration);
             lk.unlock();
         }
-        std::cout << "Got partial proof for iteration: " << iteration << ". Computing the last segment.\n";
-        auto t1 = std::chrono::high_resolution_clock::now();
-        // Recalculate everything from the checkpoint, since there is no guarantee the iter didn't arrive late.
+        std::cout << "Got partial proof for iteration: " << iteration << ". Computing the last segment for the "
+                  << proof_segments.size() << "-wesolowski proof.\n";
         form y;
         if (proof_segments.size() > 0) {
             y = proof_segments[proof_segments.size() - 1].y;        
         } else {
             y = form::generator(D);
         }
-        form y_copy = y;
-        integer L = root(-D, 4);
-        PulmarkReducer reducer;
-        std::vector<form> intermediates((iteration - proved_iters) / 10 + 1);
+        if (proved_iters < iteration) {
+            auto t1 = std::chrono::high_resolution_clock::now();
+            // Recalculate everything from the checkpoint, since there is no guarantee the iter didn't arrive late.
+            form y_copy = y;
+            integer L = root(-D, 4);
+            PulmarkReducer reducer;
+            std::vector<form> intermediates((iteration - proved_iters) / 10 + 1);
 
-        for (int i = 0; i < iteration - proved_iters; i++) {
-            if (i % 10 == 0) {
-                intermediates[i / 10] = y;
+            for (int i = 0; i < iteration - proved_iters; i++) {
+                if (i % 10 == 0) {
+                    intermediates[i / 10] = y;
+                }
+                nudupl_form(y, y, D, L);
+                reducer.reduce(y);   
             }
-            nudupl_form(y, y, D, L);
-            reducer.reduce(y);   
+            Segment last_segment(
+                /*start=*/proved_iters,
+                /*length=*/iteration - proved_iters,
+                /*x=*/y_copy,
+                /*y=*/y
+            );
+            Prover prover(last_segment, D, weso);
+            prover.SetIntermediates(&intermediates);
+            prover.GenerateProof();
+            last_segment.proof = prover.GetProof();
+            proof_segments.emplace_back(last_segment);
+            auto t2 = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+            std::cout << "Got final proof for iteration: " << iteration << "\n";
+            std::cout << "Last segment proof time: " << duration / 1000.0 << "s\n";
         }
-        Segment last_segment(
-            /*start=*/proved_iters,
-            /*length=*/iteration - proved_iters,
-            /*x=*/y_copy,
-            /*y=*/y
-        );
-        Prover prover(last_segment, D, weso);
-        prover.SetIntermediates(&intermediates);
-        prover.GenerateProof();
-        last_segment.proof = prover.GetProof();
-        proof_segments.emplace_back(last_segment);
-        auto t2 = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-        std::cout << "Got final proof for iteration: " << iteration << "\n";
-        std::cout << "Last segment proof time: " << duration / 1000.0 << "s\n";
         {
             // Proof is done, segments can now resume.
-            std::lock_guard<std::mutex> lk(proof_mutex);
-            proof_done = true;
-            proof_cv.notify_all();
+            // std::lock_guard<std::mutex> lk(proof_mutex);
+            // proof_done = true;
+            // proof_cv.notify_all();
         }
         // y, proof, [iters1, y1, proof1], [iters2, y2, proof2], ...
         int int_size = (D.num_bits() + 16) >> 4;
@@ -926,7 +929,7 @@ class ProverManager {
                         expected_proving_iters = done_segments[0][done_segments[0].size() - 1].start +
                                                  done_segments[0][done_segments[0].size() - 1].length;
                     }
-                    if (pending_iters.size() > 0 && expected_proving_iters + (1 << 16) >= *pending_iters.begin()) {
+                    if (pending_iters.size() > 0 && expected_proving_iters + (1 << 16) > *pending_iters.begin()) {
                         // Calculate the real number of iters we can prove.
                         // It needs to stick to 64-wesolowski limit.
                         // In some cases, the last 2^16 segment might be slightly inaccurate,
@@ -948,20 +951,20 @@ class ProverManager {
                                 }
                             }
                         }
-                        if ((max_proving_iteration + (1 << 16)) >= *pending_iters.begin()) {
+                        if ((max_proving_iteration + (1 << 16)) > *pending_iters.begin()) {
                             // Do only the proof, resume the segments only after it's done.
-                            for (int i = 0; i < provers.size(); i++)
-                                if (provers[i].first->IsRunning())
-                                    provers[i].first->pause();
-                            proof_done = false;
+                            // for (int i = 0; i < provers.size(); i++)
+                            //    if (provers[i].first->IsRunning())
+                            //        provers[i].first->pause();
+                            // proof_done = false;
                             proof_mutex.unlock();
                             proof_cv.notify_all();
                             
-                            while (!proof_done) {
-                                std::unique_lock<std::mutex> lk2(proof_mutex);
-                                proof_cv.wait(lk2);
-                                lk2.unlock();
-                            }
+                            //while (!proof_done) {
+                            //    std::unique_lock<std::mutex> lk2(proof_mutex);
+                            //    proof_cv.wait(lk2);
+                            //    lk2.unlock();
+                            //}
                         }
                     }
                 }
