@@ -6,6 +6,9 @@
     #define NDEBUG
 #endif
 
+#ifndef INCLUDE_H
+#define INCLUDE_H
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -51,3 +54,5 @@ typedef __int128 int128;
 
 #define todo
 #define USED __attribute__((used))
+
+#endif // INCLUDE_H

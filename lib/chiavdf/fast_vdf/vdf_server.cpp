@@ -1,6 +1,6 @@
 #include <boost/asio.hpp>
 #include "vdf.h"
-#include "create_discriminant.h"
+
 using boost::asio::ip::tcp;
 
 const int max_length = 2048;
@@ -24,6 +24,10 @@ void CreateAndWriteProof(integer D, form x, int64_t num_iterations, WesolowskiCa
     std::lock_guard<std::mutex> lock(socket_mutex);
     PrintInfo("Generated proof = " + str_result);;
     boost::asio::write(sock, boost::asio::buffer(str_result.c_str(), str_result.size()));
+}
+
+void CreateAndWriteProofNew(ProverManager& pm, uint64_t iteration) {
+    pm.Prove(iteration);
 }
 
 void session(tcp::socket sock) {
@@ -210,10 +214,16 @@ void test() {
     std::thread vdf_worker(repeated_square, f, D, L, std::ref(weso), std::ref(stopped));
     ProverManager pm(D, &weso, segments, 2); 
     pm.start();
-    std::this_thread::sleep_for (std::chrono::seconds(300));
+    for (int i = 0; i <= 10; i++) {
+        std::thread t(CreateAndWriteProofNew, std::ref(pm), (1 << 21) * i + (1 << 16) - 1);
+        t.detach();
+    }
+    /*std::this_thread::sleep_for (std::chrono::seconds(1800));
     std::cout << "Stopping everything.\n";
     pm.stop();
     stopped = true;
+    vdf_worker.join();
+    */
     vdf_worker.join();
 }
 

@@ -6,7 +6,26 @@
 #include "proof_common.h"
 #include "create_discriminant.h"
 
-const int kMaxBytesProof = 100000;
+const int kMaxBytesProof = 10000;
+
+void VerifyWesolowskiProof(integer &D, form x, form y, form proof, int iters, bool &is_valid)
+{
+    PulmarkReducer reducer;
+    int int_size = (D.num_bits() + 16) >> 4;
+    integer L = root(-D, 4);
+    integer B = GetB(D, x, y);
+    integer r = FastPow(2, iters, B);
+    form f1 = FastPowFormNucomp(proof, D, B, L, reducer);
+    form f2 = FastPowFormNucomp(x, D, r, L, reducer);
+    if (f1 * f2 == y)
+    {
+        is_valid = true;
+    }
+    else
+    {
+        is_valid = false;
+    }
+}
 
 integer ConvertBytesToInt(uint8_t *bytes, int start_index, int end_index)
 {
@@ -77,20 +96,21 @@ bool CheckProofOfTimeNWesolowskiInner(integer &D, form x, uint8_t *proof_blob,
         int iters1 = iter_list[iter_list.size() - 1];
         int iters2 = iters - iters1;
         bool ver_outer;
-        std::thread t(VerifyWesolowskiProof, std::ref(D), x, proof[proof.size() - 2], proof[proof.size() - 1], iters1, std::ref(ver_outer));
+        VerifyWesolowskiProof(D, x, proof[proof.size() - 2], proof[proof.size() - 1], iters1, ver_outer);
+        if (!ver_outer) 
+            return false;
         uint8_t new_proof_bytes[kMaxBytesProof];
         for (int i = 0; i < blob_len - 4 * int_size; i++)
             new_proof_bytes[i] = proof_blob[i];
         iter_list.pop_back();
         bool ver_inner = CheckProofOfTimeNWesolowskiInner(D, proof[proof.size() - 2], new_proof_bytes, blob_len - 4 * int_size, iters2, int_size, iter_list, recursion - 1);
-        t.join();
-        if (ver_inner && ver_outer)
+        if (ver_inner)
             return true;
         return false;
     }
 }
 
-bool CheckProofOfTimeNWesolowski(integer &D, form x, uint8_t *proof_blob, int proof_blob_len, int iters, int recursion)
+bool CheckProofOfTimeNWesolowski(integer D, form x, uint8_t *proof_blob, int proof_blob_len, int iters, int recursion)
 {
     int int_size = (D.num_bits() + 16) >> 4;
     uint8_t new_proof_blob[kMaxBytesProof];
@@ -107,7 +127,7 @@ bool CheckProofOfTimeNWesolowski(integer &D, form x, uint8_t *proof_blob, int pr
         new_cnt += 4 * int_size;
     }
     bool is_valid = CheckProofOfTimeNWesolowskiInner(D, x, new_proof_blob, new_cnt, iters, int_size, iter_list, recursion);
-    return is_valid;
+    return is_valid; 
 }
 
 std::vector<uint8_t> HexToBytes(char *hex_proof)
@@ -161,7 +181,6 @@ bool CheckProofOfTimeType(ProofOfTimeType &proof)
         form y = form::from_abd(proof.a, proof.b, discriminant);
         std::vector<uint8_t> proof_blob = SerializeForm(y, int_size);
         proof_blob.insert(proof_blob.end(), proof.witness.begin(), proof.witness.end());
-
         result = CheckProofOfTimeNWesolowski(discriminant, x, proof_blob.data(), proof_blob.size(), proof.iterations_needed, proof.witness_type);
     }
     catch (std::exception &e)

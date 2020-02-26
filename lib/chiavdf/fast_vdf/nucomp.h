@@ -33,6 +33,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 **/
 
+#ifndef NUCOMP_H
+#define NUCOMP_H
+
 #include "xgcd_partial.c"
 
 #define LOG2(X) (63 - __builtin_clzll((X)))
@@ -339,3 +342,5 @@ void nudupl_form(form &a, form &b, integer &D, integer &L)
     *a.b.impl = *fr.b;
     *a.c.impl = *fr.c;
 }
+
+#endif //NUCOMP_H

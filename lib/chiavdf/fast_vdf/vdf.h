@@ -41,7 +41,7 @@
 #include <chrono>
 #include <condition_variable>
 
-#include "proof_common.h"
+#include "verifier.h"
 
 #include <boost/asio.hpp>
 
@@ -104,7 +104,9 @@ public:
     int64_t switch_index;
     int64_t iterations = 0; // This must be intialized to zero at start
     int segments;
+    // The intermediate values size of a 2^16 segment.
     const int bucket_size1 = 6554;
+    // The intermediate values size of a >= 2^18 segment.
     const int bucket_size2 = 21846;
     // Assume provers won't be left behind by more than this # of segments.
     const int window_size = 20;
@@ -130,7 +132,7 @@ public:
             buckets_begin.push_back(buckets_begin[buckets_begin.size() - 1] + bucket_size2 * window_size);
         }
         
-        int space_needed = 20 * (21846 * (segments - 1) + 6554);
+        int space_needed = window_size * (bucket_size1 + bucket_size2 * (segments - 1));
         forms = (form*) calloc(space_needed, sizeof(form));
         std::cout << "Calloc'd " << to_string(space_needed * sizeof(form)) << " bytes\n";
 
@@ -595,6 +597,11 @@ class Prover {
         is_finished = false;
     }
 
+    void SetIntermediates(std::vector<form>* intermediates) {
+        this->intermediates = intermediates;
+        have_intermediates = true;
+    }
+
     void stop() {
         std::lock_guard<std::mutex> lk(m);
         is_finished = true;
@@ -656,7 +663,11 @@ class Prover {
             for (uint64_t i = 0; i < ceil(1.0 * num_iterations / (k * l)); i++) {
                 if (num_iterations >= k * (i * l + j + 1)) {
                     uint64_t b = GetBlock(i*l + j, k, num_iterations, B);
-                    tmp = weso->GetForm(done_iterations + i * k * l, bucket);
+                    if (!have_intermediates) {
+                        tmp = weso->GetForm(done_iterations + i * k * l, bucket);
+                    } else {
+                        tmp = &(intermediates->at(i));
+                    } 
                     nucomp_form(ys[b], ys[b], *tmp, D, L);
                 }
                 if (is_finished) {
@@ -731,6 +742,8 @@ class Prover {
     bool is_finished;
     std::condition_variable cv;
     std::mutex m;
+    std::vector<form>* intermediates;
+    bool have_intermediates = false;
 };
 
 class ProverManager {
@@ -757,6 +770,111 @@ class ProverManager {
         stopped = true;
         for (int i = 0; i < provers.size(); i++)
             provers[i].first->stop();
+        std::lock_guard<std::mutex> lk(proof_mutex);
+        proof_cv.notify_all();
+    }
+
+    Proof Prove(uint64_t iteration) {
+        proof_mutex.lock();
+        pending_iters.insert(iteration);
+        proof_mutex.unlock();
+        std::vector<Segment> proof_segments;
+        uint64_t proved_iters = 0;
+        {
+            std::unique_lock<std::mutex> lk(proof_mutex);
+            proof_cv.wait(lk, [this, iteration] {
+                if ((max_proving_iteration + (1 << 16)) >= iteration) 
+                    return true;
+                return stopped;
+            });
+            if (stopped)    
+                return Proof();
+            for (int i = segment_count; i >= 0; i--) {
+                int segment_size = (1 << (16 + 2 * i));
+                int position = proved_iters / segment_size;
+                while (position < done_segments[i].size() && proved_iters + segment_size <= iteration) {
+                    proof_segments.emplace_back(done_segments[i][position]);
+                    position++;
+                    proved_iters += segment_size;
+                }
+            }
+            pending_iters.erase(iteration);
+            lk.unlock();
+        }
+        std::cout << "Got partial proof for iteration: " << iteration << ". Computing the last segment.\n";
+        auto t1 = std::chrono::high_resolution_clock::now();
+        // Recalculate everything from the checkpoint, since there is no guarantee the iter didn't arrive late.
+        form y;
+        if (proof_segments.size() > 0) {
+            y = proof_segments[proof_segments.size() - 1].y;        
+        } else {
+            y = form::generator(D);
+        }
+        form y_copy = y;
+        integer L = root(-D, 4);
+        PulmarkReducer reducer;
+        std::vector<form> intermediates((iteration - proved_iters) / 10 + 1);
+
+        for (int i = 0; i < iteration - proved_iters; i++) {
+            if (i % 10 == 0) {
+                intermediates[i / 10] = y;
+            }
+            nudupl_form(y, y, D, L);
+            reducer.reduce(y);   
+        }
+        Segment last_segment(
+            /*start=*/proved_iters,
+            /*length=*/iteration - proved_iters,
+            /*x=*/y_copy,
+            /*y=*/y
+        );
+        Prover prover(last_segment, D, weso);
+        prover.SetIntermediates(&intermediates);
+        prover.GenerateProof();
+        last_segment.proof = prover.GetProof();
+        proof_segments.emplace_back(last_segment);
+        auto t2 = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+        std::cout << "Got final proof for iteration: " << iteration << "\n";
+        std::cout << "Last segment proof time: " << duration / 1000.0 << "s\n";
+        {
+            // Proof is done, segments can now resume.
+            std::lock_guard<std::mutex> lk(proof_mutex);
+            proof_done = true;
+            proof_cv.notify_all();
+        }
+        // y, proof, [iters1, y1, proof1], [iters2, y2, proof2], ...
+        int int_size = (D.num_bits() + 16) >> 4;
+        std::vector<unsigned char> y_serialized;
+        std::vector<unsigned char> proof_serialized;
+        y_serialized = SerializeForm(y, int_size);
+        proof_serialized = SerializeForm(proof_segments[proof_segments.size() - 1].proof, int_size);
+        for (int i = proof_segments.size() - 2; i >= 0; i--) {
+            std::vector<unsigned char> tmp = ConvertIntegerToBytes(integer(proof_segments[i].length), 8);
+            proof_serialized.insert(proof_serialized.end(), tmp.begin(), tmp.end());
+            tmp.clear();
+            tmp = SerializeForm(proof_segments[i].y, int_size);
+            proof_serialized.insert(proof_serialized.end(), tmp.begin(), tmp.end());
+            tmp.clear();
+            tmp = SerializeForm(proof_segments[i].proof, int_size);
+            proof_serialized.insert(proof_serialized.end(), tmp.begin(), tmp.end());
+        }
+        Proof proof(y_serialized, proof_serialized);
+        std::cout << "Proof: " << proof.hex() << "\n";
+
+        if (debug_mode) {
+            std::vector<uint8_t> proof_blob(y_serialized);
+            proof_blob.insert(proof_blob.end(), proof_serialized.begin(), proof_serialized.end());
+            form generator = form::generator(D);
+            bool correct;
+            try {
+                correct = CheckProofOfTimeNWesolowski(D, generator, proof_blob.data(), proof_blob.size(), iteration, proof_segments.size() - 1);
+            } catch (std::exception &e) {
+                correct = false;
+            }
+            std::cout << "The proof generated is " << (correct ? "correct" : "incorrect") << ".\n";
+        }
+        return proof;
     }
 
     void RunEventLoop() {
@@ -766,29 +884,89 @@ class ProverManager {
                 std::unique_lock<std::mutex> lk(new_event_mutex);
                 new_event_cv.wait(lk, []{return new_event;});
                 new_event = false;
+                lk.unlock();
             }
             if (stopped)
                 return; 
-            // Check if some provers finished.
-            for (int i = 0; i < provers.size(); i++) {
-                if (provers[i].first->IsFinished()) {
-                    provers[i].second.proof = provers[i].first->GetProof();
-                    if (debug_mode) {
+            {
+                // Protect done_segments, pending_iters and max_proving_iters.
+                std::lock_guard<std::mutex> lk(proof_mutex);
+                bool new_small_segment = false;
+                // Check if some provers finished.
+                for (int i = 0; i < provers.size(); i++) {
+                    if (provers[i].first->IsFinished()) {
+                        provers[i].second.proof = provers[i].first->GetProof();
                         // Check if the segment is correct.
                         std::cout << "Done segment: [" << provers[i].second.start 
                                   << ", " << provers[i].second.start + provers[i].second.length 
                                   << "]. Bucket: " << provers[i].second.GetSegmentBucket() << ". ";
-                        bool correct;
-                        VerifyWesolowskiProof(D, provers[i].second.x, provers[i].second.y, provers[i].second.proof, provers[i].second.length, correct);
-                        std::cout << (correct ? "Correct segment" : "Incorrect segment");
-                        std::cout << "\n";
+                        if (debug_mode) {
+                            bool correct;
+                            VerifyWesolowskiProof(D, provers[i].second.x, provers[i].second.y, provers[i].second.proof, provers[i].second.length, correct);
+                            std::cout << (correct ? "Correct segment" : "Incorrect segment");
+                        }
+                        std::cout << "\n"; 
+                        if (provers[i].second.length == (1 << 16)) {
+                            new_small_segment = true;
+                        }
+                        int index = provers[i].second.GetSegmentBucket();
+                        int position = provers[i].second.start / provers[i].second.length;
+                        while (done_segments[index].size() <= position)  
+                            done_segments[index].emplace_back(Segment());
+                        done_segments[index][position] = provers[i].second;
+                        provers.erase(provers.begin() + i);
+                        i--;
                     }
-                    int index = provers[i].second.GetSegmentBucket();
-                    done_segments[index].emplace_back(provers[i].second);
-                    provers.erase(provers.begin() + i);
-                    i--;
+                }
+
+                // We can advance the proving iterations only when a new 2^16 segment is done.
+                if (new_small_segment) {
+                    uint64_t expected_proving_iters = 0;
+                    if (done_segments[0].size() > 0) {
+                        expected_proving_iters = done_segments[0][done_segments[0].size() - 1].start +
+                                                 done_segments[0][done_segments[0].size() - 1].length;
+                    }
+                    if (pending_iters.size() > 0 && expected_proving_iters + (1 << 16) >= *pending_iters.begin()) {
+                        // Calculate the real number of iters we can prove.
+                        // It needs to stick to 64-wesolowski limit.
+                        // In some cases, the last 2^16 segment might be slightly inaccurate,
+                        // so calculate the real number.
+                        max_proving_iteration = 0;
+                        int proof_blobs = 0;
+                        for (int i = segment_count - 1; i >= 0 && proof_blobs < 63; i--) {
+                            int segment_size = (1 << (16 + 2 * i));
+                            if (max_proving_iteration % segment_size != 0) {
+                                std::cout << "Warning: segments don't have the proper sizes.\n";
+                            } else {
+                                int position = max_proving_iteration / segment_size;
+                                while (position < done_segments[i].size() && !done_segments[i][position].is_empty) {
+                                    max_proving_iteration += segment_size;
+                                    proof_blobs++;
+                                    position++;
+                                    if (proof_blobs == 63)
+                                        break;
+                                }
+                            }
+                        }
+                        if ((max_proving_iteration + (1 << 16)) >= *pending_iters.begin()) {
+                            // Do only the proof, resume the segments only after it's done.
+                            for (int i = 0; i < provers.size(); i++)
+                                if (provers[i].first->IsRunning())
+                                    provers[i].first->pause();
+                            proof_done = false;
+                            proof_mutex.unlock();
+                            proof_cv.notify_all();
+                            
+                            while (!proof_done) {
+                                std::unique_lock<std::mutex> lk2(proof_mutex);
+                                proof_cv.wait(lk2);
+                                lk2.unlock();
+                            }
+                        }
+                    }
                 }
             }
+            
             // Check if new segments have arrived, and add them as pending proof.
             uint64_t vdf_iteration = weso->iterations;
             for (int i = 0; i < segment_count; i++) {
@@ -896,5 +1074,14 @@ class ProverManager {
     std::vector<uint64_t> last_appended;
     // Finished segments.
     std::vector<std::vector<Segment>> done_segments;
+    // Iterations that we need proof for.
+    std::set<uint64_t> pending_iters;
+    // Protect pending_iters and done_segments.
+    std::mutex proof_mutex;
+    // Notify proving threads when they are ready to prove.
+    std::condition_variable proof_cv;
+    // Maximum iter that can be proved.
+    uint64_t max_proving_iteration = 0;
+    bool proof_done;
 };
 

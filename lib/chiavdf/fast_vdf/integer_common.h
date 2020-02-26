@@ -89,6 +89,9 @@
     }
 };*/
 
+#ifndef INTEGER_COMMON_H
+#define INTEGER_COMMON_H
+
 struct track_max_type {
     map<pair<int, string>, pair<int, bool>> data;
 
@@ -431,3 +434,5 @@ USED string to_string(mpz_struct* t) {
     mpz_set(t_int.impl, t);
     return t_int.to_string();
 }
+
+#endif // INTEGER_COMMON_H
