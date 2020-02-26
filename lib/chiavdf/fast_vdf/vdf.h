@@ -49,10 +49,6 @@ bool warn_on_corruption_in_production=false;
 
 using boost::asio::ip::tcp;
 
-const int kMaxItersAllowed = 8e8;
-// Don't modify this constant!
-const int kSwitchIters = 91000000;
-
 struct akashnil_form {
     // y = ax^2 + bxy + y^2
     mpz_t a;
@@ -95,10 +91,6 @@ void repeated_square_original(vdf_original &vdfo, form& f, const integer& D, con
 class WesolowskiCallback :public INUDUPLListener {
 public:
     uint64_t kl;
-
-    //struct form *forms;
-    form result;
-
     bool deferred;
     int64_t switch_iters = -1;
     int64_t switch_index;
@@ -167,12 +159,6 @@ public:
 #endif
     }
 
-    void IncreaseConstants(int num_iters) {
-        kl = 100;
-        switch_iters = num_iters;
-        switch_index = num_iters / 10;
-    }
-
     int GetPosition(int exponent, int bucket) {
         int power_2 = 1 << (16 + 2 * bucket);
         int position = buckets_begin[bucket];
@@ -233,22 +219,8 @@ public:
                 SetForm(type, data, mulf);
             }
         }
-        //iterations=iteration; // safe to access now
     }
 };
-
-void ApproximateParameters(uint64_t T, uint64_t& L, uint64_t& k, uint64_t& w) {
-    double log_memory = 23.25349666;
-    double log_T = log2(T);
-    L = 1;
-    if (log_T - log_memory > 0.000001) {
-        L = ceil(pow(2, log_memory - 20));
-    }
-    double intermediate = T * (double)0.6931471 / (2.0 * L);
-    k = std::max(std::round(log(intermediate) - log(log(intermediate)) + 0.25), 1.0);
-    //w = floor((double) T / ((double) T/k + L * (1 << (k+1)))) - 2;
-    w = 2;
-}
 
 // thread safe; but it is only called from the main thread
 void repeated_square(form f, const integer& D, const integer& L, WesolowskiCallback &weso, bool& stopped) {
@@ -262,20 +234,6 @@ void repeated_square(form f, const integer& D, const integer& L, WesolowskiCallb
 
     while (!stopped) {
         uint64 c_checkpoint_interval=checkpoint_interval;
-
-        if (weso.iterations >= kMaxItersAllowed - 500000) {
-            std::cout << "Maximum possible number of iterations reached!\n";
-            return ;
-        }
-
-        if (weso.iterations >= kSwitchIters && weso.kl == 10) {
-            uint64 round_up = (100 - num_iterations % 100) % 100;
-            if (round_up > 0) {
-                repeated_square_original(*weso.vdfo, f, D, L, num_iterations, round_up, &weso);
-            }
-            num_iterations += round_up;
-            weso.IncreaseConstants(num_iterations);
-        }
 
         #ifdef VDF_TEST
             form f_copy;
@@ -412,118 +370,6 @@ struct Proof {
     std::vector<unsigned char> y;
     std::vector<unsigned char> proof;
 };
-
-form GenerateProof(form &y, form &x_init, integer &D, uint64_t done_iterations, uint64_t num_iterations, uint64_t k, uint64_t l, WesolowskiCallback& weso, bool& stop_signal) {
-}
-
-void GenerateProofThreaded(std::promise<form> && form_promise, form y, form x_init, integer D, uint64_t done_iterations, uint64_t num_iterations, uint64_t
-k, uint64_t l, WesolowskiCallback& weso, bool& stop_signal) {
-    form proof = GenerateProof(y, x_init, D, done_iterations, num_iterations, k, l, weso, stop_signal);
-    form_promise.set_value(proof);
-}
-
-Proof CreateProofOfTimeWesolowski(integer& D, form x, int64_t num_iterations, uint64_t done_iterations, WesolowskiCallback& weso, bool& stop_signal) {
-    uint64_t l, k, w;
-    form x_init = x;
-    integer L=root(-D, 4);
-
-    k = 10;
-    w = 2;
-    l = (num_iterations >= 10000000) ? 10 : 1;
-
-    while (!stop_signal && weso.iterations < done_iterations + num_iterations) {
-        std::this_thread::sleep_for (std::chrono::milliseconds(200));
-    }
-
-    if (stop_signal)
-        return Proof();
-
-    vdf_original vdfo_proof;
-
-    uint64 checkpoint = (done_iterations + num_iterations) - (done_iterations + num_iterations) % 100;
-    //mpz_init(y.a.impl);
-    //mpz_init(y.b.impl);
-    //mpz_init(y.c.impl);
-    form y;
-    repeated_square_original(vdfo_proof, y, D, L, 0, (done_iterations + num_iterations) % 100, NULL);
-
-    auto proof = GenerateProof(y, x_init, D, done_iterations, num_iterations, k, l, weso, stop_signal);
-
-    if (stop_signal)
-        return Proof();
-
-    int int_size = (D.num_bits() + 16) >> 4;
-
-    std::vector<unsigned char> y_bytes = SerializeForm(y, 129);
-
-    std::vector<unsigned char> proof_bytes = SerializeForm(proof, int_size);
-    Proof final_proof=Proof(y_bytes, proof_bytes);
-    return final_proof;
-}
-
-Proof CreateProofOfTimeNWesolowski(integer& D, form x, int64_t num_iterations,
-                                   uint64_t done_iterations, WesolowskiCallback& weso, int depth_limit, int depth, bool& stop_signal) {
-    uint64_t l, k, w;
-    int64_t iterations1, iterations2;
-    integer L=root(-D, 4);
-    form x_init = x;
-
-    k = 10;
-    w = 2;
-    iterations1 = num_iterations * w / (w + 1);
-
-    // NOTE(Florin): This is still suboptimal,
-    // some work can still be lost if weso iterations is in between iterations1 and num_iterations.
-    if (weso.iterations >= done_iterations + num_iterations) {
-        iterations1 = (done_iterations + num_iterations) / 3;
-    }
-
-    iterations1 = iterations1 - iterations1 % 100;
-    iterations2 = num_iterations - iterations1;
-
-    l = (iterations1 >= 10000000) ? 10 : 1;
-    
-    while (!stop_signal && weso.iterations < done_iterations + iterations1) {
-        std::this_thread::sleep_for (std::chrono::milliseconds(200));
-    }
-
-    if (stop_signal)
-        return Proof();
-
-    form y1;
-
-    std::promise<form> form_promise;
-    auto form_future = form_promise.get_future();
-
-    std::thread t(&GenerateProofThreaded, std::move(form_promise), y1, x_init, D, done_iterations, iterations1, k, l, std::ref(weso), std::ref(stop_signal));
-
-    Proof proof2;
-    if (depth < depth_limit - 1) {
-        proof2 = CreateProofOfTimeNWesolowski(D, y1, iterations2, done_iterations + iterations1, weso, depth_limit, depth + 1, stop_signal);
-    } else {
-        proof2 = CreateProofOfTimeWesolowski(D, y1, iterations2, done_iterations + iterations1, weso, stop_signal);
-    }
-
-    t.join();
-    if (stop_signal)
-        return Proof();
-    form proof = form_future.get();
-
-    int int_size = (D.num_bits() + 16) >> 4;
-    Proof final_proof;
-    final_proof.y = proof2.y;
-    std::vector<unsigned char> proof_bytes(proof2.proof);
-    std::vector<unsigned char> tmp = ConvertIntegerToBytes(integer(iterations1), 8);
-    proof_bytes.insert(proof_bytes.end(), tmp.begin(), tmp.end());
-    tmp.clear();
-    tmp = SerializeForm(y1, int_size);
-    proof_bytes.insert(proof_bytes.end(), tmp.begin(), tmp.end());
-    tmp.clear();
-    tmp = SerializeForm(proof, int_size);
-    proof_bytes.insert(proof_bytes.end(), tmp.begin(), tmp.end());
-    final_proof.proof = proof_bytes;
-    return final_proof;
-}
 
 struct Segment {
     uint64_t start;
@@ -823,6 +669,9 @@ class ProverManager {
                 }
                 nudupl_form(y, y, D, L);
                 reducer.reduce(y);   
+                if (stopped) {
+                    return Proof();
+                }
             }
             Segment last_segment(
                 /*start=*/proved_iters,
@@ -830,21 +679,19 @@ class ProverManager {
                 /*x=*/y_copy,
                 /*y=*/y
             );
+            // TODO: stop this prover as well in case stop signal arrives.
             Prover prover(last_segment, D, weso);
             prover.SetIntermediates(&intermediates);
             prover.GenerateProof();
             last_segment.proof = prover.GetProof();
             proof_segments.emplace_back(last_segment);
+            if (stopped) {
+                return Proof();
+            }
             auto t2 = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
             std::cout << "Got final proof for iteration: " << iteration << "\n";
             std::cout << "Last segment proof time: " << duration / 1000.0 << "s\n";
-        }
-        {
-            // Proof is done, segments can now resume.
-            // std::lock_guard<std::mutex> lk(proof_mutex);
-            // proof_done = true;
-            // proof_cv.notify_all();
         }
         // y, proof, [iters1, y1, proof1], [iters2, y2, proof2], ...
         int int_size = (D.num_bits() + 16) >> 4;
@@ -952,19 +799,8 @@ class ProverManager {
                             }
                         }
                         if ((max_proving_iteration + (1 << 16)) > *pending_iters.begin()) {
-                            // Do only the proof, resume the segments only after it's done.
-                            // for (int i = 0; i < provers.size(); i++)
-                            //    if (provers[i].first->IsRunning())
-                            //        provers[i].first->pause();
-                            // proof_done = false;
                             proof_mutex.unlock();
                             proof_cv.notify_all();
-                            
-                            //while (!proof_done) {
-                            //    std::unique_lock<std::mutex> lk2(proof_mutex);
-                            //    proof_cv.wait(lk2);
-                            //    lk2.unlock();
-                            //}
                         }
                     }
                 }
