@@ -160,8 +160,8 @@ void test() {
     std::thread vdf_worker(repeated_square, f, D, L, std::ref(weso), std::ref(stopped));
     ProverManager pm(D, &weso, segments, thread_count); 
     pm.start();
-    for (int i = 0; i <= 10; i++) {
-        std::thread t(CreateProof, std::ref(pm), (1 << 23) * i + (1 << 16) - i % 2);
+    for (int i = 0; i <= 30; i++) {
+        std::thread t(CreateProof, std::ref(pm), (1 << 15) * i + (1 << 14));
         t.detach();
     }
     std::this_thread::sleep_for (std::chrono::seconds(1800));

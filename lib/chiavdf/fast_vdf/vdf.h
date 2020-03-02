@@ -90,11 +90,8 @@ void repeated_square_original(vdf_original &vdfo, form& f, const integer& D, con
 
 class WesolowskiCallback :public INUDUPLListener {
 public:
-    uint64_t kl;
-    bool deferred;
-    int64_t switch_iters = -1;
-    int64_t switch_index;
-    int64_t iterations = 0; // This must be intialized to zero at start
+    //std::atomic<int64_t> iterations = 0; // This must be intialized to zero at start
+    int64_t iterations = 0;
     int segments;
     // The intermediate values size of a 2^16 segment.
     const int bucket_size1 = 6554;
@@ -112,6 +109,7 @@ public:
     vdf_original* vdfo;
 
     std::vector<int> buckets_begin;
+    form* checkpoints;
 
     WesolowskiCallback(int segments, integer& D) {
         vdfo = new vdf_original();
@@ -127,12 +125,13 @@ public:
         int space_needed = window_size * (bucket_size1 + bucket_size2 * (segments - 1));
         forms = (form*) calloc(space_needed, sizeof(form));
         std::cout << "Calloc'd " << to_string(space_needed * sizeof(form)) << " bytes\n";
-
+        checkpoints = (form*) calloc((1 << 15), sizeof(form));
         this->D = D;
         this->L = root(-D, 4);
         form f = form::generator(D);
         for (int i = 0; i < segments; i++)
             forms[buckets_begin[i]] = f;
+        checkpoints[0] = f;
     }
 
     ~WesolowskiCallback() {
@@ -210,14 +209,17 @@ public:
     void OnIteration(int type, void *data, uint64 iteration)
     {
         iteration++;
-        form* mulf;
         for (int i = 0; i < segments; i++) {
             int power_2 = 1 << (16 + 2 * i);
             int kl = (i == 0) ? 10 : (12 * (power_2 >> 18));
             if ((iteration % power_2) % kl == 0) {
-                mulf = GetForm(iteration, i);
+                form* mulf = GetForm(iteration, i);
                 SetForm(type, data, mulf);
             }
+        }
+        if (iteration % (1 << 16) == 0) {
+            form* mulf = (&checkpoints[(iteration / (1 << 16))]);
+            SetForm(type, data, mulf);
         }
     }
 };
@@ -621,6 +623,10 @@ class ProverManager {
             proof_cv.notify_all();
         }
         {
+            std::lock_guard<std::mutex> lk(last_segment_mutex);
+            last_segment_cv.notify_all();
+        }
+        {
             std::lock_guard<std::mutex> lk(new_event_mutex);
             new_event = true;
             new_event_cv.notify_all();
@@ -631,12 +637,63 @@ class ProverManager {
         proof_mutex.lock();
         pending_iters.insert(iteration);
         proof_mutex.unlock();
+        last_segment_mutex.lock();
+        pending_iters_last_sg.insert(iteration - iteration % (1 << 16));
+        last_segment_mutex.unlock();
         std::vector<Segment> proof_segments;
+        // Wait for weso.iteration to reach the last segment.
+        {
+            std::unique_lock<std::mutex> lk(last_segment_mutex);
+            last_segment_cv.wait(lk, [this, iteration] {
+                if (vdf_iteration >= iteration - iteration % (1 << 16))
+                    return true;
+                return stopped;
+            });
+            if (stopped) {
+                return Proof();
+            }
+            pending_iters_last_sg.erase(iteration - iteration % (1 << 16));
+            lk.unlock();
+        }
+        Segment last_segment;
+        form y = weso->checkpoints[iteration / (1 << 16)];
+        if (iteration % (1 << 16)) {
+            // Recalculate everything from the checkpoint, since there is no guarantee the iter didn't arrive late.
+            integer L = root(-D, 4);
+            PulmarkReducer reducer;
+            std::vector<form> intermediates(iteration % (1 << 16) / 10 + 1);
+
+            for (int i = 0; i < iteration % (1 << 16); i++) {
+                if (i % 10 == 0) {
+                    intermediates[i / 10] = y;
+                }
+                nudupl_form(y, y, D, L);
+                reducer.reduce(y);   
+                if (stopped) {
+                    return Proof();
+                }
+            }
+            Segment sg(
+                /*start=*/iteration - iteration % (1 << 16),
+                /*length=*/iteration % (1 << 16),
+                /*x=*/weso->checkpoints[iteration / (1 << 16)],
+                /*y=*/y
+            );
+            // TODO: stop this prover as well in case stop signal arrives.
+            Prover prover(sg, D, weso);
+            prover.SetIntermediates(&intermediates);
+            prover.GenerateProof();
+            sg.proof = prover.GetProof();
+            if (stopped) {
+                return Proof();
+            }
+            last_segment = sg;
+        }
         uint64_t proved_iters = 0;
         {
             std::unique_lock<std::mutex> lk(proof_mutex);
             proof_cv.wait(lk, [this, iteration] {
-                if ((max_proving_iteration + (1 << 16)) > iteration) 
+                if (max_proving_iteration >= iteration - iteration % (1 << 16)) 
                     return true;
                 return stopped;
             });
@@ -654,51 +711,8 @@ class ProverManager {
             pending_iters.erase(iteration);
             lk.unlock();
         }
-        std::cout << "Got partial proof for iteration: " << iteration << ". Computing the last segment for the "
-                  << proof_segments.size() << "-wesolowski proof.\n";
-        form y;
-        if (proof_segments.size() > 0) {
-            y = proof_segments[proof_segments.size() - 1].y;        
-        } else {
-            y = form::generator(D);
-        }
-        if (proved_iters < iteration) {
-            auto t1 = std::chrono::high_resolution_clock::now();
-            // Recalculate everything from the checkpoint, since there is no guarantee the iter didn't arrive late.
-            form y_copy = y;
-            integer L = root(-D, 4);
-            PulmarkReducer reducer;
-            std::vector<form> intermediates((iteration - proved_iters) / 10 + 1);
-
-            for (int i = 0; i < iteration - proved_iters; i++) {
-                if (i % 10 == 0) {
-                    intermediates[i / 10] = y;
-                }
-                nudupl_form(y, y, D, L);
-                reducer.reduce(y);   
-                if (stopped) {
-                    return Proof();
-                }
-            }
-            Segment last_segment(
-                /*start=*/proved_iters,
-                /*length=*/iteration - proved_iters,
-                /*x=*/y_copy,
-                /*y=*/y
-            );
-            // TODO: stop this prover as well in case stop signal arrives.
-            Prover prover(last_segment, D, weso);
-            prover.SetIntermediates(&intermediates);
-            prover.GenerateProof();
-            last_segment.proof = prover.GetProof();
+        if (!last_segment.is_empty) {
             proof_segments.emplace_back(last_segment);
-            if (stopped) {
-                return Proof();
-            }
-            auto t2 = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-            std::cout << "Got final proof for iteration: " << iteration << "\n";
-            std::cout << "Last segment proof time: " << duration / 1000.0 << "s\n";
         }
         // y, proof, [iters1, y1, proof1], [iters2, y2, proof2], ...
         int int_size = (D.num_bits() + 16) >> 4;
@@ -717,7 +731,12 @@ class ProverManager {
             proof_serialized.insert(proof_serialized.end(), tmp.begin(), tmp.end());
         }
         Proof proof(y_serialized, proof_serialized);
+        std::cout << "Got proof for iteration: " << iteration << ". ("
+                  << proof_segments.size() << "-wesolowski proof)\n";
         std::cout << "Proof: " << proof.hex() << "\n";
+        std::cout << "Current weso iteration: " << weso->iterations 
+                  << ". Extra proof time (in VDF iterations): " << weso->iterations - iteration
+                  << "\n";
 
         if (debug_mode) {
             std::vector<uint8_t> proof_blob(y_serialized);
@@ -742,6 +761,15 @@ class ProverManager {
                 new_event_cv.wait(lk, []{return new_event;});
                 new_event = false;
                 lk.unlock();
+            }
+            // Check if we can prove the last segment for some iteration.
+            vdf_iteration = weso->iterations;
+            {
+                std::lock_guard<std::mutex> lk(last_segment_mutex);
+                if (pending_iters_last_sg.size() > 0 && vdf_iteration >= *pending_iters_last_sg.begin()) {
+                    last_segment_mutex.unlock();
+                    last_segment_cv.notify_all();
+                }
             }
             if (stopped)
                 return; 
@@ -783,7 +811,11 @@ class ProverManager {
                         expected_proving_iters = done_segments[0][done_segments[0].size() - 1].start +
                                                  done_segments[0][done_segments[0].size() - 1].length;
                     }
-                    if (pending_iters.size() > 0 && expected_proving_iters + (1 << 16) > *pending_iters.begin()) {
+                    
+                    uint64_t best_pending_iter;
+                    if (pending_iters.size() > 0)
+                        best_pending_iter = *pending_iters.begin();
+                    if (pending_iters.size() > 0 && expected_proving_iters >= best_pending_iter - best_pending_iter % (1 << 16)) {
                         // Calculate the real number of iters we can prove.
                         // It needs to stick to 64-wesolowski limit.
                         // In some cases, the last 2^16 segment might be slightly inaccurate,
@@ -805,7 +837,8 @@ class ProverManager {
                                 }
                             }
                         }
-                        if ((max_proving_iteration + (1 << 16)) > *pending_iters.begin()) {
+                        // We have all the proof, except for the small segment.
+                        if (max_proving_iteration >= best_pending_iter - best_pending_iter % (1 << 16)) {
                             proof_mutex.unlock();
                             proof_cv.notify_all();
                         }
@@ -814,7 +847,6 @@ class ProverManager {
             }
             
             // Check if new segments have arrived, and add them as pending proof.
-            uint64_t vdf_iteration = weso->iterations;
             for (int i = 0; i < segment_count; i++) {
                 int sg_length = 1 << (16 + 2 * i); 
                 while (last_appended[i] + sg_length <= vdf_iteration) {
@@ -922,12 +954,18 @@ class ProverManager {
     std::vector<std::vector<Segment>> done_segments;
     // Iterations that we need proof for.
     std::set<uint64_t> pending_iters;
+    // Last segment beginning for our pending iters.
+    std::set<uint64_t> pending_iters_last_sg;
     // Protect pending_iters and done_segments.
     std::mutex proof_mutex;
+    std::mutex last_segment_mutex;
     // Notify proving threads when they are ready to prove.
     std::condition_variable proof_cv;
+    std::condition_variable last_segment_cv;
     // Maximum iter that can be proved.
     uint64_t max_proving_iteration = 0;
+    // Where the VDF thread is at.
+    uint64_t vdf_iteration = 0;
     bool proof_done;
 };
 
