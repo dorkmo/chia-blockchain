@@ -161,7 +161,7 @@ void test() {
     ProverManager pm(D, &weso, segments, thread_count); 
     pm.start();
     for (int i = 0; i <= 30; i++) {
-        std::thread t(CreateProof, std::ref(pm), (1 << 15) * i + (1 << 14));
+        std::thread t(CreateProof, std::ref(pm), (1 << 21) * i + 60000);
         t.detach();
     }
     std::this_thread::sleep_for (std::chrono::seconds(1800));

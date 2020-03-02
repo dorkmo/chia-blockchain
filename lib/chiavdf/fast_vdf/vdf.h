@@ -699,7 +699,7 @@ class ProverManager {
             });
             if (stopped)    
                 return Proof();
-            for (int i = segment_count; i >= 0; i--) {
+            for (int i = segment_count - 1; i >= 0; i--) {
                 int segment_size = (1 << (16 + 2 * i));
                 int position = proved_iters / segment_size;
                 while (position < done_segments[i].size() && proved_iters + segment_size <= iteration) {
