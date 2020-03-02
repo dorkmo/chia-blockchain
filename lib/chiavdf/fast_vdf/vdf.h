@@ -305,12 +305,11 @@ void repeated_square(form f, const integer& D, const integer& L, WesolowskiCallb
         }
 
         if (num_iterations % (1 << 16) + actual_iterations >= (1 << 16)) {
-            //if (debug_mode) {
-            //    std::cout << "VDF Worker iteration: " << (num_iterations + actual_iterations) << "\n";
-            //}
             // Notify event loop a new segment arrives.
-            std::lock_guard<std::mutex> lk(new_event_mutex);
-            new_event = true;
+            {
+                std::lock_guard<std::mutex> lk(new_event_mutex);
+                new_event = true;
+            }
             new_event_cv.notify_one();
         }
         num_iterations+=actual_iterations;
@@ -451,12 +450,14 @@ class Prover {
     }
 
     void stop() {
-        std::lock_guard<std::mutex> lk(m);
-        is_finished = true;
-        if (is_paused) {
-            is_paused = false;
-            cv.notify_one();
+        {
+            std::lock_guard<std::mutex> lk(m);
+            is_finished = true;
+            if (is_paused) {
+                is_paused = false;
+            }
         }
+        cv.notify_one();
     }
 
     void start() {
@@ -470,8 +471,10 @@ class Prover {
     }
 
     void resume() {
-        std::lock_guard<std::mutex> lk(m);
-        is_paused = false;
+        {
+            std::lock_guard<std::mutex> lk(m);
+            is_paused = false;
+        }
         cv.notify_one();
     }
 
@@ -570,8 +573,10 @@ class Prover {
         proof = x;
         is_finished = true;
         // Notify event loop a proving thread is free.
-        std::lock_guard<std::mutex> lk(new_event_mutex);
-        new_event = true;
+        {
+            std::lock_guard<std::mutex> lk(new_event_mutex);
+            new_event = true;
+        }
         new_event_cv.notify_one();
     }
 
@@ -618,19 +623,13 @@ class ProverManager {
         stopped = true;
         for (int i = 0; i < provers.size(); i++)
             provers[i].first->stop();
-        {
-            std::lock_guard<std::mutex> lk(proof_mutex);
-            proof_cv.notify_all();
-        }
-        {
-            std::lock_guard<std::mutex> lk(last_segment_mutex);
-            last_segment_cv.notify_all();
-        }
+        proof_cv.notify_all();
+        last_segment_cv.notify_all();
         {
             std::lock_guard<std::mutex> lk(new_event_mutex);
             new_event = true;
-            new_event_cv.notify_all();
         }
+        new_event_cv.notify_all();
     }
 
     Proof Prove(uint64_t iteration) {
@@ -731,11 +730,12 @@ class ProverManager {
             proof_serialized.insert(proof_serialized.end(), tmp.begin(), tmp.end());
         }
         Proof proof(y_serialized, proof_serialized);
+        uint64_t vdf_iteration = weso->iterations;
         std::cout << "Got proof for iteration: " << iteration << ". ("
                   << proof_segments.size() << "-wesolowski proof)\n";
         std::cout << "Proof: " << proof.hex() << "\n";
-        std::cout << "Current weso iteration: " << weso->iterations 
-                  << ". Extra proof time (in VDF iterations): " << weso->iterations - iteration
+        std::cout << "Current weso iteration: " << vdf_iteration
+                  << ". Extra proof time (in VDF iterations): " << vdf_iteration - iteration
                   << "\n";
 
         if (debug_mode) {
@@ -762,17 +762,21 @@ class ProverManager {
                 new_event = false;
                 lk.unlock();
             }
+            if (stopped)
+                return; 
             // Check if we can prove the last segment for some iteration.
             vdf_iteration = weso->iterations;
+            bool new_last_segment = false;
             {
                 std::lock_guard<std::mutex> lk(last_segment_mutex);
                 if (pending_iters_last_sg.size() > 0 && vdf_iteration >= *pending_iters_last_sg.begin()) {
-                    last_segment_mutex.unlock();
-                    last_segment_cv.notify_all();
+                    new_last_segment = true;
                 }
             }
-            if (stopped)
-                return; 
+            if (new_last_segment) {
+                last_segment_cv.notify_all();
+            }
+            uint64_t best_pending_iter = (1LL << 63);
             {
                 // Protect done_segments, pending_iters and max_proving_iters.
                 std::lock_guard<std::mutex> lk(proof_mutex);
@@ -812,7 +816,6 @@ class ProverManager {
                                                  done_segments[0][done_segments[0].size() - 1].length;
                     }
                     
-                    uint64_t best_pending_iter;
                     if (pending_iters.size() > 0)
                         best_pending_iter = *pending_iters.begin();
                     if (pending_iters.size() > 0 && expected_proving_iters >= best_pending_iter - best_pending_iter % (1 << 16)) {
@@ -837,15 +840,13 @@ class ProverManager {
                                 }
                             }
                         }
-                        // We have all the proof, except for the small segment.
-                        if (max_proving_iteration >= best_pending_iter - best_pending_iter % (1 << 16)) {
-                            proof_mutex.unlock();
-                            proof_cv.notify_all();
-                        }
                     }
                 }
             }
-            
+            // We have all the proof for some iter, except for the small segment.
+            if (max_proving_iteration >= best_pending_iter - best_pending_iter % (1 << 16)) {
+                proof_cv.notify_all();
+            }
             // Check if new segments have arrived, and add them as pending proof.
             for (int i = 0; i < segment_count; i++) {
                 int sg_length = 1 << (16 + 2 * i); 
