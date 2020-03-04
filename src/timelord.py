@@ -22,8 +22,11 @@ log = logging.getLogger(__name__)
 
 
 class Timelord:
-    def __init__(self, config: Dict):
+    def __init__(
+        self, config: Dict, discrimant_size_bits=constants["DISCRIMINANT_SIZE_BITS"]
+    ):
         self.config: Dict = config
+        self.discriminant_size_bits = discrimant_size_bits
         self.ips_estimate = {
             k: v
             for k, v in list(
@@ -264,12 +267,46 @@ class Timelord:
                     writer.write(b"ACK")
                     await writer.drain()
                 break
-            else:
+            elif data.decode() == "WESO":
+                # n-wesolowski
                 try:
-                    # This must be a proof, read the continuation.
-                    proof = await reader.readexactly(1860)
-                    stdout_bytes_io: io.BytesIO = io.BytesIO(
-                        bytes.fromhex(data.decode() + proof.decode())
+                    # TODO: change protocol to use bytes and same ProofOfTime format (instead of hex)
+                    # Reads 16 bytes of hex, for the 8 byte iterations
+                    bytes_read = await reader.readexactly(16)
+                    iterations_needed = uint64(
+                        int.from_bytes(
+                            bytes.fromhex(bytes_read.decode()), "big", signed=True
+                        )
+                    )
+                    bytes_read = await reader.readexactly(16)
+                    # Reads 16 bytes of hex, for the 8 byte y_size
+                    y_size = uint64(
+                        int.from_bytes(
+                            bytes.fromhex(bytes_read.decode()), "big", signed=True
+                        )
+                    )
+                    # reads 2 * y_size of hex bytes
+                    y_bytes = bytes.fromhex(
+                        (await reader.readexactly(2 * y_size)).decode()
+                    )
+
+                    # reads 2 hex bytes for witness type.
+                    bytes_read = await reader.readexactly(2)
+                    witness_type = uint8(
+                        int.from_bytes(
+                            bytes.fromhex(bytes_read.decode()), "big", signed=True
+                        )
+                    )
+
+                    # Reads 16 bytes of hex, for the 8 byte proof size
+                    proof_size_bytes = await reader.readexactly(16)
+                    proof_size = int.from_bytes(
+                        bytes.fromhex(proof_size_bytes.decode()), "big", signed=True
+                    )
+
+                    # reads 2 * proof_size of hex bytes
+                    proof_bytes = bytes.fromhex(
+                        (await reader.readexactly(2 * proof_size)).decode()
                     )
                 except (asyncio.IncompleteReadError, ConnectionResetError, Exception) as e:
                     log.warning(f"{type(e)} {e}")
@@ -282,36 +319,17 @@ class Timelord:
                             self.done_discriminants.append(challenge_hash)
                     break
 
-                iterations_needed = uint64(
-                    int.from_bytes(stdout_bytes_io.read(8), "big", signed=True)
-                )
-                y = ClassgroupElement.parse(stdout_bytes_io)
-                proof_bytes: bytes = stdout_bytes_io.read()
-
+                output = ClassgroupElement.from_bytes(y_bytes)
                 # Verifies our own proof just in case
-                proof_blob = (
-                    ClassGroup.from_ab_discriminant(y.a, y.b, disc).serialize()
-                    + proof_bytes
-                )
-                x = ClassGroup.from_ab_discriminant(2, 1, disc)
-                if not check_proof_of_time_nwesolowski(
-                    disc,
-                    x,
-                    proof_blob,
-                    iterations_needed,
-                    constants["DISCRIMINANT_SIZE_BITS"],
-                    self.config["n_wesolowski"],
-                ):
-                    log.error("My proof is incorrect!")
-
-                output = ClassgroupElement(y.a, y.b)
                 proof_of_time = ProofOfTime(
                     challenge_hash,
                     iterations_needed,
                     output,
-                    self.config["n_wesolowski"],
+                    witness_type,
                     [uint8(b) for b in proof_bytes],
                 )
+                if not proof_of_time.is_valid(self.discriminant_size_bits):
+                    log.error("Invalid proof of time")
                 response = timelord_protocol.ProofOfTimeFinished(proof_of_time)
 
                 await self._update_avg_ips(challenge_hash, iterations_needed, ip)

@@ -66,7 +66,7 @@ bool new_event = false;
 std::condition_variable new_event_cv;
 std::mutex new_event_mutex;
 
-bool debug_mode = true;
+bool debug_mode = false;
 
 //always works
 void repeated_square_original(vdf_original &vdfo, form& f, const integer& D, const integer& L, uint64 base, uint64 iterations, INUDUPLListener *nuduplListener) {
@@ -370,6 +370,7 @@ struct Proof {
 
     std::vector<unsigned char> y;
     std::vector<unsigned char> proof;
+    uint8_t witness_type;
 };
 
 struct Segment {
@@ -717,7 +718,8 @@ class ProverManager {
         int int_size = (D.num_bits() + 16) >> 4;
         std::vector<unsigned char> y_serialized;
         std::vector<unsigned char> proof_serialized;
-        y_serialized = SerializeForm(y, int_size);
+        // Match ClassGroupElement type from the blockchain.
+        y_serialized = SerializeForm(y, 129);
         proof_serialized = SerializeForm(proof_segments[proof_segments.size() - 1].proof, int_size);
         for (int i = proof_segments.size() - 2; i >= 0; i--) {
             std::vector<unsigned char> tmp = ConvertIntegerToBytes(integer(proof_segments[i].length), 8);
@@ -730,16 +732,17 @@ class ProverManager {
             proof_serialized.insert(proof_serialized.end(), tmp.begin(), tmp.end());
         }
         Proof proof(y_serialized, proof_serialized);
+        proof.witness_type = proof_segments.size() - 1;
         uint64_t vdf_iteration = weso->iterations;
         std::cout << "Got proof for iteration: " << iteration << ". ("
-                  << proof_segments.size() << "-wesolowski proof)\n";
+                  << proof_segments.size() - 1 << "-wesolowski proof)\n";
         std::cout << "Proof: " << proof.hex() << "\n";
         std::cout << "Current weso iteration: " << vdf_iteration
                   << ". Extra proof time (in VDF iterations): " << vdf_iteration - iteration
                   << "\n";
 
         if (debug_mode) {
-            std::vector<uint8_t> proof_blob(y_serialized);
+            std::vector<uint8_t> proof_blob = SerializeForm(y, int_size);
             proof_blob.insert(proof_blob.end(), proof_serialized.begin(), proof_serialized.end());
             form generator = form::generator(D);
             bool correct;
@@ -785,16 +788,15 @@ class ProverManager {
                 for (int i = 0; i < provers.size(); i++) {
                     if (provers[i].first->IsFinished()) {
                         provers[i].second.proof = provers[i].first->GetProof();
-                        // Check if the segment is correct.
-                        std::cout << "Done segment: [" << provers[i].second.start 
-                                  << ", " << provers[i].second.start + provers[i].second.length 
-                                  << "]. Bucket: " << provers[i].second.GetSegmentBucket() << ". ";
                         if (debug_mode) {
+                            // Check if the segment is correct.
+                            std::cout << "Done segment: [" << provers[i].second.start 
+                                      << ", " << provers[i].second.start + provers[i].second.length 
+                                      << "]. Bucket: " << provers[i].second.GetSegmentBucket() << ". ";
                             bool correct;
                             VerifyWesolowskiProof(D, provers[i].second.x, provers[i].second.y, provers[i].second.proof, provers[i].second.length, correct);
-                            std::cout << (correct ? "Correct segment" : "Incorrect segment");
+                            std::cout << (correct ? "Correct segment" : "Incorrect segment") << "\n";
                         }
-                        std::cout << "\n"; 
                         if (provers[i].second.length == (1 << 16)) {
                             new_small_segment = true;
                         }

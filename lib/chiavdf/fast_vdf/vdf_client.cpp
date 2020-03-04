@@ -14,22 +14,32 @@ void PrintInfo(std::string input) {
     print("VDF Client " + to_string(process_number) + ": " + input);
 }
 
-Proof CreateProof(ProverManager& pm, uint64_t iteration) {
-    return pm.Prove(iteration);
-}
-
 void CreateAndWriteProof(ProverManager& pm, uint64_t iteration, bool& stop_signal, tcp::socket& sock) {
-    Proof result = CreateProof(pm, iteration);
+    Proof result = pm.Prove(iteration);
     if (stop_signal == true) {
         PrintInfo("Got stop signal before completing the proof!");
         return ;
     }
+
+    // Writes the number of iterations
     std::vector<unsigned char> bytes = ConvertIntegerToBytes(integer(iteration), 8);
+
+    // Writes the y, with prepended size
+    std::vector<unsigned char> y_size = ConvertIntegerToBytes(integer(result.y.size()), 8);
+    bytes.insert(bytes.end(), y_size.begin(), y_size.end());
     bytes.insert(bytes.end(), result.y.begin(), result.y.end());
+
+    // Writes the witness type.
+    std::vector<unsigned char> witness_type = ConvertIntegerToBytes(integer(result.witness_type), 1);
+    bytes.insert(bytes.end(), witness_type.begin(), witness_type.end());
+
+    // Writes the proof, with prepended size
+    std::vector<unsigned char> proof_size = ConvertIntegerToBytes(integer(result.proof.size()), 8);
+    bytes.insert(bytes.end(), proof_size.begin(), proof_size.end());
     bytes.insert(bytes.end(), result.proof.begin(), result.proof.end());
-    std::string str_result = BytesToStr(bytes);
+
+    std::string str_result = "WESO" + BytesToStr(bytes);
     std::lock_guard<std::mutex> lock(socket_mutex);
-    PrintInfo("Generated proof = " + str_result);;
     boost::asio::write(sock, boost::asio::buffer(str_result.c_str(), str_result.size()));
 }
 
@@ -74,16 +84,12 @@ void session(tcp::socket& sock) {
         integer L=root(-D, 4);
         form f=form::generator(D);
 
-        bool stop_signal = false;
-        // (iteration, thread_id)
-        std::set<std::pair<uint64_t, uint64_t> > seen_iterations;
-        bool stop_vector[100];
-
         std::vector<std::thread> threads;
         WesolowskiCallback weso(segments, D);
         bool stopped = false;
         std::thread vdf_worker(repeated_square, f, D, L, std::ref(weso), std::ref(stopped));
         ProverManager pm(D, &weso, segments, thread_count);        
+        pm.start();
 
         // Tell client that I'm ready to get the challenges.
         boost::asio::write(sock, boost::asio::buffer("OK", 2));
@@ -99,15 +105,16 @@ void session(tcp::socket& sock) {
             if (iters == 0) {
                 PrintInfo("Got stop signal!");
                 stopped = true;
-                vdf_worker.join();
                 pm.stop();
+                vdf_worker.join();
                 for (int t = 0; t < threads.size(); t++) {
                     threads[t].join();
                 }
                 free(forms);
+                free(weso.checkpoints);
             } else {
                 PrintInfo("Received iteration: " + to_string(iters));
-                threads.push_back(std::thread(CreateAndWriteProof, std::ref(pm), iters, std::ref(stop_signal), std::ref(sock)));
+                threads.push_back(std::thread(CreateAndWriteProof, std::ref(pm), iters, std::ref(stopped), std::ref(sock)));
             }
         }
     } catch (std::exception& e) {
@@ -132,50 +139,11 @@ void session(tcp::socket& sock) {
     }
 }
 
-// Temporary code, getting deleted soon.
-void test() {
-    std::vector<uint8_t> challenge_hash({0, 0, 1, 2, 3, 3, 4, 4});
-    integer D = CreateDiscriminant(challenge_hash, 1024);
-
-    if (getenv( "warn_on_corruption_in_production" )!=nullptr) {
-        warn_on_corruption_in_production=true;
-    }
-    if (is_vdf_test) {
-        PrintInfo( "=== Test mode ===" );
-    }
-    if (warn_on_corruption_in_production) {
-        PrintInfo( "=== Warn on corruption enabled ===" );
-    }
-    assert(is_vdf_test); //assertions should be disabled in VDF_MODE==0
-    init_gmp();
-    allow_integer_constructor=true; //make sure the old gmp allocator isn't used
-    set_rounding_mode();
-
-    integer L=root(-D, 4);
-    form f=form::generator(D);
-    
-    WesolowskiCallback weso(segments, D);
-
-    bool stopped = false;
-    std::thread vdf_worker(repeated_square, f, D, L, std::ref(weso), std::ref(stopped));
-    ProverManager pm(D, &weso, segments, thread_count); 
-    pm.start();
-    for (int i = 0; i <= 30; i++) {
-        std::thread t(CreateProof, std::ref(pm), (1 << 21) * i + 60000);
-        t.detach();
-    }
-    std::this_thread::sleep_for (std::chrono::seconds(1800));
-    std::cout << "Stopping everything.\n";
-    pm.stop();
-    stopped = true;
-    vdf_worker.join();
-}
-
 int main(int argc, char* argv[])
 {
-  /*try
+  try
   {
-    if (argc != 2)
+    if (argc != 4)
     {
       std::cerr << "Usage: ./vdf_client <host> <port> <process_number>\n";
       return 1;
@@ -193,7 +161,6 @@ int main(int argc, char* argv[])
     session(s);
   } catch (std::exception& e) {
     std::cerr << "Exception: " << e.what() << "\n";
-  } */
-  test();
+  } 
   return 0;
 }

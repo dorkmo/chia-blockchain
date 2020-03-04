@@ -19,10 +19,15 @@ endif
 
 .PHONY: all clean
 
-all: vdf_client
+all: vdf_client prover_test
 
 clean:
-	rm -f *.o vdf_client compile_asm
+	rm -f *.o vdf_client prover_test compile_asm
+
+prover_test: prover_test.o asm_compiled.o
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+prover_test.o: CXXFLAGS += $(OPT_CFLAGS)
 
 vdf_client: vdf_client.o asm_compiled.o
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
