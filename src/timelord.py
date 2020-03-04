@@ -1,14 +1,11 @@
 import asyncio
-import io
 import logging
 import time
 from asyncio import Lock, StreamReader, StreamWriter
 from typing import Dict, List, Optional, Tuple
 
 
-from lib.chiavdf.inkfish.classgroup import ClassGroup
 from lib.chiavdf.inkfish.create_discriminant import create_discriminant
-from lib.chiavdf.inkfish.proof_of_time import check_proof_of_time_nwesolowski
 from src.consensus.constants import constants
 from src.protocols import timelord_protocol
 from src.server.outbound_message import Delivery, Message, NodeType, OutboundMessage
