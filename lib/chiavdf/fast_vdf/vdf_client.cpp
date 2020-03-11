@@ -11,7 +11,7 @@ int segments = 7;
 int thread_count = 2;
 
 void PrintInfo(std::string input) {
-    print("VDF Client " + to_string(process_number) + ": " + input);
+    std::cout << "VDF Client: " << input << "\n";
 }
 
 void CreateAndWriteProof(ProverManager& pm, uint64_t iteration, bool& stop_signal, tcp::socket& sock) {

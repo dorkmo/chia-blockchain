@@ -3,9 +3,12 @@
 
 # Binary files
 /compile_asm
-/vdf_client
+/vdf
+/server
+/vdf_bench
 /vdf_server
+/vdf_client
 /verifier
-/prover_test
 /verifier_test
+/prover_test
 /build/*
