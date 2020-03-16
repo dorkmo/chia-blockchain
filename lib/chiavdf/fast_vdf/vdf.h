@@ -516,6 +516,7 @@ class Prover {
                 if (num_iterations >= k * (i * l + j + 1)) {
                     uint64_t b = GetBlock(i*l + j, k, num_iterations, B);
                     if (!have_intermediates) {
+                        if (is_finished) return ;
                         tmp = weso->GetForm(done_iterations + i * k * l, bucket);
                     } else {
                         tmp = &(intermediates->at(i));
@@ -853,6 +854,7 @@ class ProverManager {
             for (int i = 0; i < segment_count; i++) {
                 int sg_length = 1 << (16 + 2 * i); 
                 while (last_appended[i] + sg_length <= vdf_iteration) {
+                    if (stopped) return ;
                     Segment sg(
                         /*start=*/last_appended[i], 
                         /*length=*/sg_length, 
@@ -971,4 +973,3 @@ class ProverManager {
     uint64_t vdf_iteration = 0;
     bool proof_done;
 };
-
