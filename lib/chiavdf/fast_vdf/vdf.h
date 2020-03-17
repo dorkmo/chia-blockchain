@@ -124,8 +124,8 @@ public:
         
         int space_needed = window_size * (bucket_size1 + bucket_size2 * (segments - 1));
         forms = (form*) calloc(space_needed, sizeof(form));
-        std::cout << "Calloc'd " << to_string(space_needed * sizeof(form)) << " bytes\n";
-        checkpoints = (form*) calloc((1 << 15), sizeof(form));
+        checkpoints = (form*) calloc((1 << 17), sizeof(form));
+        std::cout << "Calloc'd " << to_string((space_needed + (1 << 17)) * sizeof(form)) << " bytes\n";
         this->D = D;
         this->L = root(-D, 4);
         form f = form::generator(D);
@@ -172,7 +172,7 @@ public:
         return &(forms[GetPosition(exponent, bucket)]);
     }
 
-    void SetForm(int type, void *data, form* mulf) {
+    void SetForm(int type, void *data, form* mulf, bool reduced = false) {
         switch(type) {
             case NL_SQUARESTATE:
             {
@@ -199,7 +199,9 @@ public:
             default:
                 cout << "Unknown case" << endl;
         }
-        reduce(*mulf);
+        if (reduced) {
+            reduce(*mulf);
+        }
     }
     
     // We need to store: 
@@ -219,7 +221,7 @@ public:
         }
         if (iteration % (1 << 16) == 0) {
             form* mulf = (&checkpoints[(iteration / (1 << 16))]);
-            SetForm(type, data, mulf);
+            SetForm(type, data, mulf, /*reduced=*/true);
         }
     }
 };
@@ -518,6 +520,7 @@ class Prover {
                     if (!have_intermediates) {
                         if (is_finished) return ;
                         tmp = weso->GetForm(done_iterations + i * k * l, bucket);
+                        reducer.reduce(*tmp);
                     } else {
                         tmp = &(intermediates->at(i));
                     } 
@@ -858,8 +861,8 @@ class ProverManager {
                     Segment sg(
                         /*start=*/last_appended[i], 
                         /*length=*/sg_length, 
-                        /*x=*/*(weso->GetForm(last_appended[i], i)), 
-                        /*y=*/*(weso->GetForm(last_appended[i] + sg_length, i))
+                        /*x=*/weso->checkpoints[last_appended[i] / (1 << 16)],
+                        /*y=*/weso->checkpoints[(last_appended[i] + sg_length) / (1 << 16)]
                     );
                     pending_segments[i].emplace_back(sg);
                     last_appended[i] += sg_length;

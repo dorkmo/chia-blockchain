@@ -8,7 +8,7 @@ std::mutex socket_mutex;
 
 int process_number;
 int segments = 7;
-int thread_count = 2;
+int thread_count = 3;
 
 void PrintInfo(std::string input) {
     std::cout << "VDF Client: " << input << "\n";

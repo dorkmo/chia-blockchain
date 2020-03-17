@@ -1,7 +1,7 @@
 #include "vdf.h"
 
 int segments = 7;
-int thread_count = 2;
+int thread_count = 3;
 
 Proof CreateProof(ProverManager& pm, uint64_t iteration) {
     return pm.Prove(iteration);
@@ -33,7 +33,7 @@ int main() {
         std::thread t(CreateProof, std::ref(pm), (1 << 21) * i + 60000);
         t.detach();
     }
-    std::this_thread::sleep_for (std::chrono::seconds(1800));
+    std::this_thread::sleep_for (std::chrono::seconds(300));
     std::cout << "Stopping everything.\n";
     pm.stop();
     stopped = true;
