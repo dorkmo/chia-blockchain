@@ -1,3 +1,4 @@
+import signal
 from typing import Any, Dict
 from pathlib import Path
 import asyncio
@@ -239,10 +240,29 @@ async def setup_timelord(port, dic={}):
     test_constants_copy = test_constants.copy()
     for k in dic.keys():
         test_constants_copy[k] = dic[k]
-
-    timelord = Timelord(config, test_constants_copy["DISCRIMINANT_SIZE_BITS"])
+    config["DISCRIMINANT_SIZE_BITS"] = test_constants_copy["DISCRIMINANT_SIZE_BITS"]
+    timelord = Timelord(config)
     server = ChiaServer(port, timelord, NodeType.TIMELORD)
     _ = await server.start_server(port, None)
+
+    timelord_shutdown_task: Optional[asyncio.Task] = None
+
+    coro = asyncio.start_server(
+        timelord._handle_client,
+        config["vdf_server"]["host"],
+        config["vdf_server"]["port"],
+        loop=asyncio.get_running_loop()
+    )
+
+    def signal_received():
+        nonlocal timelord_shutdown_task
+        server.close_all()
+        timelord_shutdown_task = asyncio.create_task(timelord._shutdown())
+
+    asyncio.get_running_loop().add_signal_handler(signal.SIGINT, signal_received)
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, signal_received)
+
+    vdf_server = asyncio.ensure_future(coro)
 
     async def run_timelord():
         async for msg in timelord._manage_discriminant_queue():
@@ -252,6 +272,7 @@ async def setup_timelord(port, dic={}):
 
     yield (timelord, server)
 
+    vdf_server.cancel()
     server.close_all()
     await timelord._shutdown()
     await timelord_task
@@ -405,6 +426,8 @@ async def setup_full_system(dic={}):
     await farmer_server.start_client(
         PeerInfo(node1_server._host, uint16(node1_server._port)), None
     )
+    await asyncio.sleep(1)  # Prevents TCP simultaneous connect with full node
+
     await timelord_server.start_client(
         PeerInfo(node1_server._host, uint16(node1_server._port)), None
     )
