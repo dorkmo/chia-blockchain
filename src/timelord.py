@@ -1,5 +1,4 @@
 import asyncio
-import io
 import logging
 import time
 from asyncio import Lock, StreamReader, StreamWriter
@@ -298,6 +297,9 @@ class Timelord:
                 y_size = uint64(int.from_bytes(y_size_bytes, "big", signed=True))
 
                 y_bytes = stdout_bytes_io.read(y_size)
+                witness_type = uint8(
+                    int.from_bytes(stdout_bytes_io.read(1), "big", signed=True)
+                )
 
                 proof_bytes: bytes = stdout_bytes_io.read()
 
@@ -311,7 +313,7 @@ class Timelord:
                     challenge_hash,
                     iterations_needed,
                     output,
-                    self.config["n_wesolowski"],
+                    witness_type,
                     proof_bytes,
                 )
 
