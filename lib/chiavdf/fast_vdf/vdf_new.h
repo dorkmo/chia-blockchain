@@ -1,5 +1,5 @@
-#ifndef VDF_NEW_H
-#define VDF_NEW_H
+#ifndef VDF_NEW
+#define VDF_NEW
 
 void normalize(integer& a, integer& b, integer& c) {
     integer r = (a-b)/(a<<1);
@@ -439,4 +439,4 @@ void parse_args(int argc, char** argv) {
     }
 }**/
 
-#endif // VDF_NEW_H
+#endif // VDF_NEW

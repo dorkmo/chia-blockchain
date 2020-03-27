@@ -1,6 +1,5 @@
 #ifndef PROOF_COMMON_H
 #define PROOF_COMMON_H
-
 #include "Reducer.h"
 
 std::vector<unsigned char> ConvertIntegerToBytes(integer x, uint64_t num_bytes) {
@@ -122,4 +121,4 @@ form FastPowFormNucomp(form x, integer &D, integer num_iterations, integer &L, P
     return res;
 }
 
-#endif // PROOF_COMMON_H
+# endif // PROOF_COMMON_H

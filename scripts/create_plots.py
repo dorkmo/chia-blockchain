@@ -1,6 +1,6 @@
 import argparse
-import os
 from copy import deepcopy
+from pathlib import Path
 
 from blspy import PrivateKey, PublicKey
 from yaml import safe_dump, safe_load
@@ -10,8 +10,8 @@ from definitions import ROOT_DIR
 from src.types.proof_of_space import ProofOfSpace
 from src.types.sized_bytes import bytes32
 
-plot_config_filename = os.path.join(ROOT_DIR, "config", "plots.yaml")
-key_config_filename = os.path.join(ROOT_DIR, "config", "keys.yaml")
+plot_config_filename = ROOT_DIR / "config" / "plots.yaml"
+key_config_filename = ROOT_DIR / "config" / "keys.yaml"
 
 
 def main():
@@ -24,9 +24,7 @@ def main():
     parser.add_argument(
         "-n", "--num_plots", help="Number of plots", type=int, default=10
     )
-    parser.add_argument(
-        "-i", "--index", help="First plot index", type=int, default=0
-    )
+    parser.add_argument("-i", "--index", help="First plot index", type=int, default=0)
     parser.add_argument(
         "-p", "--pool_pub_key", help="Hex public key of pool", type=str, default=""
     )
@@ -47,9 +45,9 @@ def main():
 
     # We need the keys file, to access pool keys (if the exist), and the sk_seed.
     args = parser.parse_args()
-    if not os.path.isfile(key_config_filename):
+    if not key_config_filename.exists():
         raise RuntimeError(
-            "Keys not generated. Run python3 ./scripts/regenerate_keys.py."
+            "Keys not generated. Run python3 ./scripts/generate_keys.py."
         )
 
     # The seed is what will be used to generate a private key for each plot
@@ -66,7 +64,8 @@ def main():
         pool_pk = pool_sk.get_public_key()
 
     print(
-        f"Creating {args.num_plots} plots, from index {args.index} to {args.index + args.num_plots - 1}, of size {args.size}, sk_seed {sk_seed.hex()} ppk {pool_pk}"
+        f"Creating {args.num_plots} plots, from index {args.index} to "
+        f"{args.index + args.num_plots - 1}, of size {args.size}, sk_seed {sk_seed.hex()} ppk {pool_pk}"
     )
 
     for i in range(args.index, args.index + args.num_plots):
@@ -79,25 +78,30 @@ def main():
         plot_seed: bytes32 = ProofOfSpace.calculate_plot_seed(
             pool_pk, sk.get_public_key()
         )
-        filename: str = f"plot-{i}-{args.size}-{plot_seed}.dat"
-        full_path: str = os.path.join(args.final_dir, filename)
-        if os.path.isfile(full_path):
+        filename: Path = Path(f"plot-{i}-{args.size}-{plot_seed}.dat")
+        full_path: Path = args.final_dir / filename
+        if full_path.exists():
             print(f"Plot {filename} already exists")
         else:
             # Creates the plot. This will take a long time for larger plots.
             plotter: DiskPlotter = DiskPlotter()
             plotter.create_plot_disk(
-                args.tmp_dir, args.final_dir, filename, args.size, bytes([]), plot_seed
+                args.tmp_dir,
+                args.final_dir,
+                str(filename),
+                args.size,
+                bytes([]),
+                plot_seed,
             )
 
         # Updates the config if necessary.
-        if os.path.isfile(plot_config_filename):
+        if plot_config_filename.exists():
             plot_config = safe_load(open(plot_config_filename, "r"))
         else:
             plot_config = {"plots": {}}
         plot_config_plots_new = deepcopy(plot_config["plots"])
         if full_path not in plot_config_plots_new:
-            plot_config_plots_new[full_path] = {
+            plot_config_plots_new[str(full_path)] = {
                 "sk": bytes(sk).hex(),
                 "pool_pk": bytes(pool_pk).hex(),
             }

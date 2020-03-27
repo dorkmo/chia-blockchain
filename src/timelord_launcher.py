@@ -2,12 +2,12 @@ import signal
 import asyncio
 import logging
 from src.util.logging import initialize_logging
-from src.util.config import load_config_cli
+from src.util.config import load_config
 from asyncio import Lock
 from typing import List
 from setproctitle import setproctitle
 
-config = load_config_cli("config.yaml", "timelord_launcher")
+config = load_config("config.yaml", "timelord_launcher")
 
 active_processes: List = []
 stopped = False
@@ -53,7 +53,7 @@ async def spawn_process(host, port, counter):
         async with lock:
             if proc in active_processes:
                 active_processes.remove(proc)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
 
 
 async def spawn_all_processes():
@@ -61,13 +61,12 @@ async def spawn_all_processes():
     host = config["host"]
     port = config["port"]
     process_count = config["process_count"]
-    awaitables = [
-        spawn_process(host, port, i)
-        for i in range(process_count)
-    ]
+    awaitables = [spawn_process(host, port, i) for i in range(process_count)]
     await asyncio.gather(*awaitables)
 
+
 if __name__ == "__main__":
+
     def signal_received():
         asyncio.create_task(kill_processes())
 

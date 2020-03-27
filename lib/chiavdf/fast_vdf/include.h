@@ -1,3 +1,6 @@
+#ifndef INCLUDE_H
+#define INCLUDE_H
+
 #ifdef NDEBUG
     #undef NDEBUG
 #endif

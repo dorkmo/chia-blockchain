@@ -1,3 +1,6 @@
+#ifndef INTEGER_COMMON_H
+#define INTEGER_COMMON_H
+
 //note: gmp already has c++ bindings so could have just used those. oh well
 
 //const bool output_stats=false;

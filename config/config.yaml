@@ -65,7 +65,7 @@ timelord:
       port: 8444
   # Maximum number of seconds allowed for a client to reconnect to the server.
   max_connection_time: 60
-  # The ip and port where the TCP clients will connect. 
+  # The ip and port where the TCP clients will connect.
   vdf_server:
     host: 127.0.0.1
     port: 8000
@@ -76,17 +76,19 @@ full_node:
   host: 127.0.0.1
   port: 8444
 
-  # Run multiple nodes with different databases by changing the database_id
-  database_id: 1
+  # Run multiple nodes with different databases by changing the database_path
+  database_path: blockchain_v3.db
+  simulator_database_path: simulator_blockchain_v3.db
 
   # If True, starts an RPC server at the following port
   start_rpc_server: True
   rpc_port: 8555
 
+  # Use UPnP to attempt to allow other full nodes to reach your node behind a gateway
   enable_upnp: True
   # Don't send any more than these number of headers and blocks, in one message
-  max_headers_to_send: 25
-  max_blocks_to_send: 5
+  max_headers_to_send: 1
+  max_blocks_to_send: 1
   num_sync_batches: 10
 
   # If node is more than these blocks behind, will do a sync
@@ -109,7 +111,7 @@ full_node:
       host: 127.0.0.1
       port: 8446
   introducer_peer:
-      host: introducer.chia.net  # Chia AWS introducer IPv4/IPv6
+      host: introducer.beta.chia.net  # Chia AWS introducer IPv4/IPv6
       port: 8444
   logging: *logging
 
@@ -133,3 +135,32 @@ introducer:
   # recent_peer_threshold seconds
   recent_peer_threshold: 6000
   logging: *logging
+
+wallet:
+  host: 127.0.0.1
+  port: 8449
+  rpc_port: 9256
+
+  # The minimum height that we care about for our transactions. Set to zero
+  # If we are restoring from private key and don't know the height.
+  starting_height: 0
+  num_sync_batches: 10
+
+  full_node_peer:
+    host: 127.0.0.1
+    port: 8444
+
+  testing: false
+  database_path: blockchain_wallet_v3.db
+
+  logging: *logging
+
+  target_peer_count: 5
+  introducer_connect_interval: 60
+  # The introducer will only return peers who it has seen in the last
+  # recent_peer_threshold seconds
+  recent_peer_threshold: 6000
+
+  introducer_peer:
+    host: introducer.beta.chia.net  # Chia AWS introducer IPv4/IPv6
+    port: 8444

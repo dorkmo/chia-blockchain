@@ -28,18 +28,24 @@ void CreateAndWriteProof(ProverManager& pm, uint64_t iteration, bool& stop_signa
     std::vector<unsigned char> y_size = ConvertIntegerToBytes(integer(result.y.size()), 8);
     bytes.insert(bytes.end(), y_size.begin(), y_size.end());
     bytes.insert(bytes.end(), result.y.begin(), result.y.end());
-
+    
     // Writes the witness type.
     std::vector<unsigned char> witness_type = ConvertIntegerToBytes(integer(result.witness_type), 1);
     bytes.insert(bytes.end(), witness_type.begin(), witness_type.end());
 
-    // Writes the proof, with prepended size
-    std::vector<unsigned char> proof_size = ConvertIntegerToBytes(integer(result.proof.size()), 8);
-    bytes.insert(bytes.end(), proof_size.begin(), proof_size.end());
     bytes.insert(bytes.end(), result.proof.begin(), result.proof.end());
+    std::string str_result = BytesToStr(bytes);
 
-    std::string str_result = "WESO" + BytesToStr(bytes);
+    const uint32_t length = str_result.size();
+    std::vector<unsigned char> prefix_bytes = ConvertIntegerToBytes(integer(length), 4);
+    std::string prefix = BytesToStr(prefix_bytes);
+
     std::lock_guard<std::mutex> lock(socket_mutex);
+
+    PrintInfo("Sending length = " + to_string(length));
+    PrintInfo("Generated proof = " + str_result);
+
+    boost::asio::write(sock, boost::asio::buffer(prefix_bytes, 4));
     boost::asio::write(sock, boost::asio::buffer(str_result.c_str(), str_result.size()));
 }
 

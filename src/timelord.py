@@ -5,23 +5,21 @@ from asyncio import Lock, StreamReader, StreamWriter
 from typing import Dict, List, Optional, Tuple
 
 
-from lib.chiavdf.inkfish.create_discriminant import create_discriminant
-from src.consensus.constants import constants
+from fastvdf import create_discriminant
 from src.protocols import timelord_protocol
 from src.server.outbound_message import Delivery, Message, NodeType, OutboundMessage
 from src.types.classgroup import ClassgroupElement
 from src.types.proof_of_time import ProofOfTime
 from src.types.sized_bytes import bytes32
 from src.util.api_decorators import api_request
-from src.util.ints import uint8, uint64
+from src.util.ints import uint64, int512, uint128
 
 log = logging.getLogger(__name__)
 
 
 class Timelord:
-    def __init__(
-        self, config: Dict, discrimant_size_bits=constants["DISCRIMINANT_SIZE_BITS"]
-    ):
+    def __init__(self, config: Dict, constants: Dict):
+        self.constants = constants
         self.config: Dict = config
         self.discriminant_size_bits = discrimant_size_bits
         self.ips_estimate = {
@@ -44,7 +42,7 @@ class Timelord:
         self.seen_discriminants: List[bytes32] = []
         self.proof_count: Dict = {}
         self.avg_ips: Dict = {}
-        self.discriminant_queue: List[Tuple[bytes32, uint64]] = []
+        self.discriminant_queue: List[Tuple[bytes32, uint128]] = []
         self.max_connection_time = self.config["max_connection_time"]
         self.potential_free_clients: List = []
         self.free_clients: List[Tuple[str, StreamReader, StreamWriter]] = []
@@ -52,7 +50,7 @@ class Timelord:
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         async with self.lock:
-            client_ip = writer.get_extra_info('peername')[0]
+            client_ip = writer.get_extra_info("peername")[0]
             log.info(f"New timelord connection from client: {client_ip}.")
             if client_ip in self.ips_estimate.keys():
                 self.free_clients.append((client_ip, reader, writer))
@@ -132,6 +130,8 @@ class Timelord:
                 if expected_finish[k] == worst_finish
             )
         assert stop_writer is not None
+        _, _, stop_ip = self.active_discriminants[stop_discriminant]
+        self.potential_free_clients.append((stop_ip, time.time()))
         stop_writer.write(b"010")
         await stop_writer.drain()
         del self.active_discriminants[stop_discriminant]
@@ -175,12 +175,13 @@ class Timelord:
                     self.best_weight_three_proofs, challenge_weight
                 )
                 for active_disc in list(self.active_discriminants):
-                    current_writer, current_weight, _ = self.active_discriminants[
+                    current_writer, current_weight, ip = self.active_discriminants[
                         active_disc
                     ]
                     if current_weight <= challenge_weight:
                         log.info(f"Active weight cleanup: {current_weight}")
                         log.info(f"Cleanup weight: {challenge_weight}")
+                        self.potential_free_clients.append((ip, time.time()))
                         current_writer.write(b"010")
                         await current_writer.drain()
                         del self.active_discriminants[active_disc]
@@ -207,7 +208,7 @@ class Timelord:
                         writer.write((iter_size + str(iter)).encode())
                         await writer.drain()
                         log.info(f"New iteration submitted: {iter}")
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
             async with self.lock:
                 if challenge_hash in self.done_discriminants:
                     alive_discriminant = False
@@ -216,10 +217,13 @@ class Timelord:
         self, challenge_hash, challenge_weight, ip, reader, writer
     ):
         disc: int = create_discriminant(
-            challenge_hash, constants["DISCRIMINANT_SIZE_BITS"]
+            challenge_hash, self.constants["DISCRIMINANT_SIZE_BITS"]
         )
 
-        writer.write((str(len(str(disc))) + str(disc)).encode())
+        prefix = str(len(str(disc)))
+        if len(prefix) == 1:
+            prefix = "00" + prefix
+        writer.write((prefix + str(disc)).encode())
         await writer.drain()
 
         try:
@@ -260,52 +264,23 @@ class Timelord:
             if data.decode() == "STOP":
                 log.info(f"Stopped client running on ip {ip}.")
                 async with self.lock:
-                    self.potential_free_clients.append((ip, time.time()))
                     writer.write(b"ACK")
                     await writer.drain()
                 break
             elif data.decode() == "WESO":
                 # n-wesolowski
                 try:
-                    # TODO: change protocol to use bytes and same ProofOfTime format (instead of hex)
-                    # Reads 16 bytes of hex, for the 8 byte iterations
-                    bytes_read = await reader.readexactly(16)
-                    iterations_needed = uint64(
-                        int.from_bytes(
-                            bytes.fromhex(bytes_read.decode()), "big", signed=True
-                        )
+                    # This must be a proof, 4bytes is length prefix
+                    length = int.from_bytes(data, "big")
+                    proof = await reader.readexactly(length)
+                    stdout_bytes_io: io.BytesIO = io.BytesIO(
+                        bytes.fromhex(proof.decode())
                     )
-                    bytes_read = await reader.readexactly(16)
-                    # Reads 16 bytes of hex, for the 8 byte y_size
-                    y_size = uint64(
-                        int.from_bytes(
-                            bytes.fromhex(bytes_read.decode()), "big", signed=True
-                        )
-                    )
-                    # reads 2 * y_size of hex bytes
-                    y_bytes = bytes.fromhex(
-                        (await reader.readexactly(2 * y_size)).decode()
-                    )
-
-                    # reads 2 hex bytes for witness type.
-                    bytes_read = await reader.readexactly(2)
-                    witness_type = uint8(
-                        int.from_bytes(
-                            bytes.fromhex(bytes_read.decode()), "big", signed=True
-                        )
-                    )
-
-                    # Reads 16 bytes of hex, for the 8 byte proof size
-                    proof_size_bytes = await reader.readexactly(16)
-                    proof_size = int.from_bytes(
-                        bytes.fromhex(proof_size_bytes.decode()), "big", signed=True
-                    )
-
-                    # reads 2 * proof_size of hex bytes
-                    proof_bytes = bytes.fromhex(
-                        (await reader.readexactly(2 * proof_size)).decode()
-                    )
-                except (asyncio.IncompleteReadError, ConnectionResetError, Exception) as e:
+                except (
+                    asyncio.IncompleteReadError,
+                    ConnectionResetError,
+                    Exception,
+                ) as e:
                     log.warning(f"{type(e)} {e}")
                     async with self.lock:
                         if challenge_hash in self.active_discriminants:
@@ -316,17 +291,37 @@ class Timelord:
                             self.done_discriminants.append(challenge_hash)
                     break
 
-                output = ClassgroupElement.from_bytes(y_bytes)
+                iterations_needed = uint64(
+                    int.from_bytes(stdout_bytes_io.read(8), "big", signed=True)
+                )
+
+                y_size_bytes = stdout_bytes_io.read(8)
+                y_size = uint64(int.from_bytes(y_size_bytes, "big", signed=True))
+
+                y_bytes = stdout_bytes_io.read(y_size)
+                witness_type = uint8(
+                    int.from_bytes(stdout_bytes_io.read(1), "big", signed=True)
+                )
+
+                proof_bytes: bytes = stdout_bytes_io.read()
+
                 # Verifies our own proof just in case
+                a = int.from_bytes(y_bytes[:129], "big", signed=True)
+                b = int.from_bytes(y_bytes[129:], "big", signed=True)
+
+                output = ClassgroupElement(int512(a), int512(b))
+
                 proof_of_time = ProofOfTime(
                     challenge_hash,
                     iterations_needed,
                     output,
                     witness_type,
-                    [uint8(b) for b in proof_bytes],
+                    proof_bytes,
                 )
-                if not proof_of_time.is_valid(self.discriminant_size_bits):
+
+                if not proof_of_time.is_valid(self.constants["DISCRIMINANT_SIZE_BITS"]):
                     log.error("Invalid proof of time")
+
                 response = timelord_protocol.ProofOfTimeFinished(proof_of_time)
 
                 await self._update_avg_ips(challenge_hash, iterations_needed, ip)
@@ -385,8 +380,7 @@ class Timelord:
                         else:
                             self.potential_free_clients = [
                                 (ip, end_time)
-                                for ip, end_time
-                                in self.potential_free_clients
+                                for ip, end_time in self.potential_free_clients
                                 if time.time() < end_time + self.max_connection_time
                             ]
                             if (
