@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import io
 from asyncio import Lock, StreamReader, StreamWriter
 from typing import Dict, List, Optional, Tuple
 
@@ -12,7 +13,7 @@ from src.types.classgroup import ClassgroupElement
 from src.types.proof_of_time import ProofOfTime
 from src.types.sized_bytes import bytes32
 from src.util.api_decorators import api_request
-from src.util.ints import uint64, int512, uint128
+from src.util.ints import uint8, uint64, int512, uint128
 
 log = logging.getLogger(__name__)
 
