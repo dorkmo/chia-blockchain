@@ -368,7 +368,7 @@ const CreatePlot = () => {
             less than 200 plots. Also, temporary files are created during the
             plotting process, which exceed the size of the final plot files, so
             make sure you have enough space. Try to use a fast drive like an SSD
-            for the temporary foler, and a large slow hard drive (like external
+            for the temporary folder, and a large slow hard drive (like external
             HDD) for the final folder.
           </p>
         </Grid>
